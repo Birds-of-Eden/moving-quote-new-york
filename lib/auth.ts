@@ -1,9 +1,42 @@
 // lib/auth.ts — v4
-import type { NextAuthOptions } from "next-auth";
+import type { NextAuthOptions, User } from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { db } from "@/lib/db";
 import bcrypt from "bcryptjs";
+
+declare module "next-auth" {
+  interface Session {
+    user: {
+      id: string;
+      role?: string;
+      name?: string | null;
+      email?: string | null;
+      image?: string | null;
+    };
+  }
+
+  interface User {
+    id: string;
+    role?: string | null;
+    name?: string | null;
+    email?: string | null;
+    image?: string | null;
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    id?: string;
+    role?: string;
+  }
+}
+
+type AppUser = User & {
+  id: string;
+  role?: string | null;
+};
 
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(db),
@@ -14,26 +47,45 @@ export const authOptions: NextAuthOptions = {
       credentials: { email: {}, password: {} },
       async authorize(c) {
         if (!c?.email || !c?.password) return null;
-        const user = await db.user.findUnique({ where: { email: c.email.toLowerCase().trim() } });
+        const user = await db.user.findUnique({
+          where: { email: c.email.toLowerCase().trim() },
+        });
         if (!user?.passwordHash) return null;
         const ok = await bcrypt.compare(c.password, user.passwordHash);
         if (!ok) return null;
-        return { id: user.id, email: user.email ?? undefined, name: user.name ?? undefined, role: user.role };
+        return {
+          id: user.id,
+          email: user.email ?? undefined,
+          name: user.name ?? undefined,
+          role: user.role,
+        };
       },
     }),
   ],
   pages: {
-    signIn: "/auth/sign-in", 
-    
+    signIn: "/auth/sign-in", // তোমার কাস্টম সাইন-ইন রুট
+    // error: "/auth/sign-in", // চাইলে error পেজও একই রাখো
   },
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) { token.id = (user as any).id; token.role = (user as any).role ?? "USER"; }
+    async jwt({ token, user }: { token: JWT; user: AppUser }) {
+      if (user) {
+        token.id = user.id;
+        token.role = user.role ?? "USER";
+      }
       return token;
     },
+
     async session({ session, token }) {
-      if (session.user) { (session.user as any).id = token.id; (session.user as any).role = token.role; }
+      if (session.user) {
+        session.user = {
+          ...session.user,
+          id: token.id as string,
+          role: token.role,
+        };
+      }
       return session;
     },
   },
 };
+
+export const auth = authOptions;
