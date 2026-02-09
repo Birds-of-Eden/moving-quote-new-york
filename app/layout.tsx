@@ -11,6 +11,9 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Moving Quote Newyork",
   description: "Created by Birds of eden",
+  icons: {
+    icon: "/image/cargo-mover.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -284,12 +284,27 @@ export default function BlogPageClient({
           </div>
         )}
 
+        {/* ✅ GRID (updated with empty state: No blogs found) */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-12">
-          {blogs.length === 0 && pageLoading
-            ? Array.from({ length: postsPerPage }).map((_, i) => (
-                <BlogCardSkeleton key={i} />
-              ))
-            : blogs.map((post) => <BlogCard key={post.id} post={post} />)}
+          {(pageLoading || isPending) ? (
+            // Loading state → Skeletons
+            Array.from({ length: postsPerPage }).map((_, i) => (
+              <BlogCardSkeleton key={i} />
+            ))
+          ) : blogs.length === 0 ? (
+            // Empty state → No blogs found
+            <div className="col-span-full">
+              <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-10 text-center">
+                <h3 className="text-2xl font-bold text-gray-900">No blogs found</h3>
+                <p className="mt-2 text-gray-600">
+                  There are no published blogs available right now.
+                </p>
+              </div>
+            </div>
+          ) : (
+            // Data state → Cards
+            blogs.map((post) => <BlogCard key={post.id} post={post} />)
+          )}
         </div>
 
         {totalPages > 1 && (
