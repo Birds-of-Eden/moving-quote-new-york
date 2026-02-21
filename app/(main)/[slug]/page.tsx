@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import type { Metadata } from "next";
 import BlogPostEditorClient from "./BlogPostEditorClient";
+import MovingCalculator from "@/components/QuoteForm";
 
 const SITE_URL_RAW =
   process.env.NEXT_PUBLIC_BASE_URL ?? "https://movingquotetexas.com/";
@@ -238,59 +239,8 @@ export default async function Page(props: {
 
         {/* RIGHT RECENT BLOGS */}
         <aside className="order-3 lg:order-3 lg:col-span-2 xl:col-span-3 2xl:col-span-2 mt-2 lg:mt-0 min-w-0">
-          <div className="lg:sticky lg:top-6 space-y-6">
-            <div className="p-5 sm:p-6 border border-slate-100 rounded-xl bg-white shadow-sm">
-              <h3 className="text-lg font-bold text-slate-900 mb-4">New Blogs</h3>
-
-              {recent.length === 0 ? (
-                <p className="text-sm text-slate-500">No recent posts found.</p>
-              ) : (
-                <div className="space-y-4">
-                  {recent.map((p) => {
-                    const pSlug = slugify(String(p?.post_title || ""));
-                    const pDesc = stripHtml(
-                      String(p?.excerpt || p?.post_content || "")
-                    ).slice(0, 90);
-                    const pDate = p?.createdAt ? new Date(p.createdAt) : null;
-
-                    return (
-                      <Link
-                        key={p.id}
-                        href={`/${encodeURIComponent(pSlug)}`}
-                        className="block group"
-                      >
-                        <div className="flex gap-3 p-3 rounded-lg hover:bg-slate-50 transition border border-transparent hover:border-slate-100">
-                          <div className="flex-1 min-w-0">
-                            <p className="font-semibold text-slate-900 group-hover:text-cyan-700 line-clamp-2">
-                              {String(p?.post_title || "")}
-                            </p>
-                            {pDate && (
-                              <p className="text-xs text-slate-500 mt-1">
-                                {pDate.toLocaleDateString()}
-                              </p>
-                            )}
-                            {pDesc && (
-                              <p className="text-sm text-slate-600 mt-1 line-clamp-2">
-                                {pDesc}...
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="mt-4 text-center">
-                <Link
-                  href="/blog"
-                  className="text-cyan-600 text-sm font-semibold hover:text-cyan-700 transition"
-                >
-                  View all →
-                </Link>
-              </div>
-            </div>
+          <div className="fixed pr-5">
+            <MovingCalculator />
           </div>
         </aside>
 
