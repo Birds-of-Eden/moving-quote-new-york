@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import BlogPostEditorClient from "./BlogPostEditorClient";
 import MovingCalculator from "@/components/QuoteForm";
 
+
 const SITE_URL_RAW =
   process.env.NEXT_PUBLIC_BASE_URL ?? "https://movingquotetexas.com/";
 const SITE_URL = SITE_URL_RAW.replace(/\/$/, "");
@@ -29,6 +30,337 @@ function slugify(input: string) {
     .slice(0, 120);
 }
 
+/* =========================
+   ✅ FAQ + JSON-LD helpers
+   (Only added, nothing removed)
+========================= */
+
+type FAQItem = { question: string; answer: string };
+
+function decodeEntities(str: string) {
+  return (str || "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function cleanText(s: string) {
+  return decodeEntities(stripHtml(s)).replace(/\s+/g, " ").trim();
+}
+
+// ✅ small helper: answer chunk sanitize
+function takeAnswerChunk(block: string) {
+  const m =
+    block.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+    block.match(/<div[^>]*>([\s\S]*?)<\/div>/i) ||
+    block.match(/<ul[^>]*>([\s\S]*?)<\/ul>/i) ||
+    block.match(/<ol[^>]*>([\s\S]*?)<\/ol>/i);
+  return m ? cleanText(m[1]).slice(0, 2500) : cleanText(block).slice(0, 2500);
+}
+
+/**
+ * ✅ Strong FAQ extractor (fix)
+ * Supports patterns:
+ * - Yoast FAQ block (schema-faq-section / schema-faq-question / schema-faq-answer)
+ * - RankMath FAQ (rank-math-list-item / rank-math-question / rank-math-answer)
+ * - <dl><dt>Question</dt><dd>Answer</dd></dl>
+ * - <h2>FAQ</h2> then repeated <h3>/<h4>Question</h3> Answer...
+ * - accordion wrappers (class contains faq/accordion/collapse)
+ * - Q:/A: inline patterns (Q: ... A: ...)
+ */
+function extractFaqFromHtml(html: string): FAQItem[] {
+  const src = html || "";
+  const out: FAQItem[] = [];
+
+  // debug counts (server log এ বোঝার জন্য)
+  const debug = {
+    yoast: 0,
+    rankmath: 0,
+    dl: 0,
+    faqHeading: 0,
+    accordion: 0,
+    qaInlineHtml: 0, // old style with breaks/tags
+    qaInlineText: 0, // ✅ NEW: same-line Q/A splitter
+  };
+
+  // ✅ Yoast FAQ block
+  {
+    const sections = [
+      ...src.matchAll(
+        /<section[^>]*class="[^"]*schema-faq-section[^"]*"[^>]*>[\s\S]*?<\/section>/gi
+      ),
+    ];
+    for (const s of sections) {
+      const block = s[0];
+
+      const qMatch =
+        block.match(
+          /<[^>]*class="[^"]*schema-faq-question[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/i
+        ) || block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+
+      const aMatch =
+        block.match(
+          /<div[^>]*class="[^"]*schema-faq-answer[^"]*"[^>]*>([\s\S]*?)<\/div>/i
+        ) ||
+        block.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+        block.match(/<div[^>]*>([\s\S]*?)<\/div>/i);
+
+      const q = qMatch ? cleanText(qMatch[1]) : "";
+      const a = aMatch ? cleanText(aMatch[1]) : "";
+      if (q && a) {
+        out.push({ question: q, answer: a });
+        debug.yoast++;
+      }
+    }
+  }
+
+  // ✅ RankMath FAQ
+  {
+    const items = [
+      ...src.matchAll(
+        /<div[^>]*class="[^"]*rank-math-list-item[^"]*"[^>]*>[\s\S]*?<\/div>/gi
+      ),
+    ];
+    for (const it of items) {
+      const block = it[0];
+
+      const qMatch =
+        block.match(
+          /<[^>]*class="[^"]*rank-math-question[^"]*"[^>]*>([\s\S]*?)<\/[^>]+>/i
+        ) || block.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i);
+
+      const aMatch =
+        block.match(
+          /<div[^>]*class="[^"]*rank-math-answer[^"]*"[^>]*>([\s\S]*?)<\/div>/i
+        ) ||
+        block.match(/<p[^>]*>([\s\S]*?)<\/p>/i) ||
+        block.match(/<div[^>]*>([\s\S]*?)<\/div>/i);
+
+      const q = qMatch ? cleanText(qMatch[1]) : "";
+      const a = aMatch ? cleanText(aMatch[1]) : "";
+      if (q && a) {
+        out.push({ question: q, answer: a });
+        debug.rankmath++;
+      }
+    }
+  }
+
+  // ✅ <dl><dt><dd>
+  {
+    const dlMatches = src.match(/<dl[\s\S]*?<\/dl>/gi) || [];
+    for (const dl of dlMatches) {
+      const dt = [...dl.matchAll(/<dt[^>]*>([\s\S]*?)<\/dt>/gi)].map((m) =>
+        cleanText(m[1])
+      );
+      const dd = [...dl.matchAll(/<dd[^>]*>([\s\S]*?)<\/dd>/gi)].map((m) =>
+        cleanText(m[1])
+      );
+      const n = Math.min(dt.length, dd.length);
+      for (let i = 0; i < n; i++) {
+        const q = dt[i];
+        const a = dd[i];
+        if (q && a) {
+          out.push({ question: q, answer: a });
+          debug.dl++;
+        }
+      }
+    }
+  }
+
+  // ✅ <h2>FAQ</h2> block + <h3>/<h4> questions
+  {
+    const faqBlockMatch = src.match(
+      /<h2[^>]*>\s*(faqs?|frequently asked questions)\s*<\/h2>([\s\S]*?)(?=<h2[^>]*>|$)/i
+    );
+
+    if (faqBlockMatch?.[2]) {
+      const block = faqBlockMatch[2];
+
+      const qMatches = [
+        ...block.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/gi),
+        ...block.matchAll(/<h4[^>]*>([\s\S]*?)<\/h4>/gi),
+      ];
+
+      for (const qm of qMatches) {
+        const q = cleanText(qm[1]);
+        if (!q) continue;
+
+        const startIdx = (qm.index ?? 0) + qm[0].length;
+        const rest = block.slice(startIdx);
+
+        const nextIndex = (() => {
+          const i3 = rest.search(/<h3[^>]*>/i);
+          const i4 = rest.search(/<h4[^>]*>/i);
+          if (i3 === -1) return i4;
+          if (i4 === -1) return i3;
+          return Math.min(i3, i4);
+        })();
+
+        const ansChunk = nextIndex >= 0 ? rest.slice(0, nextIndex) : rest;
+        const a = cleanText(ansChunk).slice(0, 2500);
+
+        if (q && a) {
+          out.push({ question: q, answer: a });
+          debug.faqHeading++;
+        }
+      }
+    }
+  }
+
+  // ✅ Accordion wrappers
+  {
+    const wrappers = [
+      ...src.matchAll(
+        /<div[^>]*class="[^"]*(faq|accordion|collapse)[^"]*"[^>]*>[\s\S]*?<\/div>/gi
+      ),
+    ];
+
+    for (const w of wrappers) {
+      const block = w[0];
+
+      const qMatches = [
+        ...block.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/gi),
+        ...block.matchAll(/<h4[^>]*>([\s\S]*?)<\/h4>/gi),
+        ...block.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/gi),
+        ...block.matchAll(/<strong[^>]*>([\s\S]*?)<\/strong>/gi),
+      ];
+
+      for (const qm of qMatches) {
+        const q = cleanText(qm[1]);
+        if (!q || q.length < 8) continue;
+
+        const startIdx = (qm.index ?? 0) + qm[0].length;
+        const rest = block.slice(startIdx);
+
+        const nextIndex = (() => {
+          const indices = [
+            rest.search(/<h3[^>]*>/i),
+            rest.search(/<h4[^>]*>/i),
+            rest.search(/<button[^>]*>/i),
+            rest.search(/<strong[^>]*>/i),
+          ].filter((x) => x >= 0);
+          return indices.length ? Math.min(...indices) : -1;
+        })();
+
+        const ansChunk = nextIndex >= 0 ? rest.slice(0, nextIndex) : rest;
+        const a = cleanText(ansChunk).slice(0, 2500);
+
+        if (q && a && a.length >= 8) {
+          out.push({ question: q, answer: a });
+          debug.accordion++;
+        }
+      }
+    }
+  }
+
+  // ✅ Old inline Q/A (works when there are <br> / </p> separators)
+  {
+    const qaPairs = [
+      ...src.matchAll(
+        /(?:<strong[^>]*>)?\s*Q\s*[:\-]\s*(?:<\/strong>)?\s*([\s\S]*?)\s*(?:<br\s*\/?>|\<\/p\>|\<\/div\>|\n)+\s*(?:<strong[^>]*>)?\s*A\s*[:\-]\s*(?:<\/strong>)?\s*([\s\S]*?)(?=(?:<strong[^>]*>)?\s*Q\s*[:\-]|$)/gi
+      ),
+    ];
+
+    for (const m of qaPairs) {
+      const q = cleanText(m[1]);
+      const a = cleanText(m[2]);
+      if (q && a) {
+        out.push({ question: q, answer: a });
+        debug.qaInlineHtml++;
+      }
+    }
+  }
+
+  // ✅✅ NEW: Same-line / same-paragraph Q: ... A: ... Q: ... A: ...
+  // We convert whole HTML → text and then split by repeated Q/A markers.
+  {
+    const text = decodeEntities(
+      src
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const matches = [
+      ...text.matchAll(
+        /(?:^|\s)Q\s*[:\-]\s*(.+?)\s*A\s*[:\-]\s*(.+?)(?=\s*Q\s*[:\-]|$)/gi
+      ),
+    ];
+
+    for (const m of matches) {
+      const q = (m[1] || "").trim();
+      const a = (m[2] || "").trim();
+      if (q && a) {
+        out.push({ question: q, answer: a });
+        debug.qaInlineText++;
+      }
+    }
+  }
+
+  // ✅ Deduplicate + filter
+  const seen = new Set<string>();
+  const unique = out
+    .map((x) => ({ question: x.question.trim(), answer: x.answer.trim() }))
+    .filter((x) => x.question.length >= 8 && x.answer.length >= 8)
+    .filter((x) => {
+      const key = `${x.question.toLowerCase()}||${x.answer.toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 20);
+
+  console.log("[FAQ-EXTRACTOR][debug]", debug);
+
+  return unique;
+}
+
+
+function buildFaqJsonLd(faqs: FAQItem[]) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqs.map((f) => ({
+      "@type": "Question",
+      name: f.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: f.answer,
+      },
+    })),
+  };
+}
+
+function buildArticleJsonLd(opts: {
+  headline: string;
+  url: string;
+  datePublished: string;
+  dateModified: string;
+  authorName: string;
+  description?: string;
+}) {
+  const { headline, url, datePublished, dateModified, authorName, description } =
+    opts;
+
+  return {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline,
+    mainEntityOfPage: url,
+    url,
+    datePublished,
+    dateModified,
+    author: { "@type": "Organization", name: authorName },
+    publisher: { "@type": "Organization", name: authorName },
+    ...(description ? { description } : {}),
+  };
+}
+
 /** ✅ FIX: params is Promise, so await it */
 export async function generateMetadata(props: {
   params: Promise<{ slug: string }>;
@@ -45,14 +377,14 @@ export async function generateMetadata(props: {
     );
 
     if (!res.ok) {
-      return { title: "Moving Quote Texas Blogs", alternates: { canonical } };
+      return { title: "Moving Quote New York Blogs", alternates: { canonical } };
     }
 
     const data = await res.json();
-    const title = String(data?.post_title || "Moving Quote Texas Blogs");
+    const title = String(data?.post_title || "Moving Quote New York Blogs");
     const desc =
       stripHtml(String(data?.post_content ?? "")).slice(0, 160) ||
-      "Read this article on Moving Quote Texas Blog.";
+      "Read this article on Moving Quote New York Blog.";
 
     return {
       title,
@@ -62,7 +394,7 @@ export async function generateMetadata(props: {
       twitter: { card: "summary", title, description: desc },
     };
   } catch {
-    return { title: "Moving Quote Texas Blogs", alternates: { canonical } };
+    return { title: "Moving Quote New York Blogs", alternates: { canonical } };
   }
 }
 
@@ -112,8 +444,65 @@ export default async function Page(props: {
     // ignore
   }
 
+  /* =========================
+     ✅ AUTO FAQ SCHEMA + CONSOLE
+  ========================= */
+
+  const faqs = extractFaqFromHtml(html);
+  const hasFaqSchema = faqs.length >= 2;
+
+  // ✅ SERVER console (terminal / Vercel logs)
+  console.log("[FAQ-SCHEMA][server]", {
+    slug,
+    extractedCount: faqs.length,
+    hasFaqSchema,
+    questions: faqs.map((f) => f.question).slice(0, 10),
+  });
+
+  const desc =
+    stripHtml(html).slice(0, 160) || "Read this article on Moving Quote New York.";
+
+  const articleJsonLd = buildArticleJsonLd({
+    headline: title,
+    url: canonical,
+    datePublished: createdAt.toISOString(),
+    dateModified: createdAt.toISOString(),
+    authorName: "Moving Quote New York",
+    description: desc,
+  });
+
+  const faqJsonLd = hasFaqSchema ? buildFaqJsonLd(faqs) : null;
+
   return (
     <div className="min-h-screen bg-white relative">
+      {/* ✅ JSON-LD (Article) */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd) }}
+      />
+
+      {/* ✅ JSON-LD (FAQ) only if found */}
+      {faqJsonLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }}
+        />
+      )}
+
+      {/* ✅ BROWSER console (Chrome DevTools -> Console) */}
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `
+            console.log("[FAQ-SCHEMA][browser] slug:", ${JSON.stringify(slug)});
+            console.log("[FAQ-SCHEMA][browser] extractedCount:", ${faqs.length});
+            console.log("[FAQ-SCHEMA][browser] hasFaqSchema:", ${hasFaqSchema});
+            console.log("[FAQ-SCHEMA][browser] questions:", ${JSON.stringify(
+              faqs.map((f) => f.question).slice(0, 10)
+            )});
+          `,
+        }}
+      />
+
       {/* Header */}
       <header className="py-6 border-b border-slate-100 shadow-sm">
         <div className="mx-auto max-w-7xl px-6">
